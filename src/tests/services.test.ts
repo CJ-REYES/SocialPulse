@@ -51,8 +51,8 @@ describe('Platform Services & Resilient HTTP Client', () => {
     expect(ttUrl.searchParams.get('scope')).toContain('video.list');
 
     const igUrl = new URL(ig.buildAuthorizationUrl({ state: 'signed-state-3' }));
-    expect(igUrl.hostname).toBe('www.instagram.com');
-    expect(igUrl.searchParams.get('scope')).toContain('instagram_business_manage_insights');
+    expect(igUrl.hostname).toBe('www.facebook.com');
+    expect(igUrl.searchParams.get('scope')).toContain('instagram_manage_insights');
 
     const fbUrl = new URL(fb.buildAuthorizationUrl({ state: 'signed-state-4' }));
     expect(fbUrl.hostname).toBe('www.facebook.com');
@@ -73,7 +73,7 @@ describe('Platform Services & Resilient HTTP Client', () => {
     const igPubUrl = new URL(
       ig.buildAuthorizationUrl({ state: 's3', includePublishScopes: true })
     );
-    expect(igPubUrl.searchParams.get('scope')).toContain('instagram_business_content_publish');
+    expect(igPubUrl.searchParams.get('scope')).toContain('instagram_content_publish');
 
     const fbPubUrl = new URL(
       fb.buildAuthorizationUrl({ state: 's4', includePublishScopes: true })
@@ -177,5 +177,60 @@ describe('Platform Services & Resilient HTTP Client', () => {
         operationName: 'test_401',
       })
     ).rejects.toMatchObject({ code: 'OAUTH_TOKEN_EXPIRED' });
+  });
+
+  it('discovers Instagram Professional account via Unified Login SUAT /me/assigned_instagram_accounts', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+
+    // 1. debug_token
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: {
+            type: 'SYSTEM_USER',
+            is_valid: true,
+            scopes: ['instagram_basic', 'instagram_content_publish'],
+          },
+        }),
+        { status: 200 }
+      )
+    );
+
+    // 2. /me/assigned_instagram_accounts
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          data: [{ id: '17841400001234567', username: 'compilandocaos' }],
+        }),
+        { status: 200 }
+      )
+    );
+
+    // 3. enrich /{igId}
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: '17841400001234567',
+          username: 'compilandocaos',
+          name: 'Compilando Caos',
+          followers_count: 1200,
+          media_count: 18,
+        }),
+        { status: 200 }
+      )
+    );
+
+    // 4. /{igId}/media
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: [] }), { status: 200 })
+    );
+
+    const ig = new InstagramService();
+    const result = await ig.fetchAccountAndVideos('suat-token-example');
+
+    expect(result.account.externalAccountId).toBe('17841400001234567');
+    expect(result.account.accountHandle).toBe('@compilandocaos');
+    expect(result.account.followersCount).toBe(1200);
+    expect(result.account.permissions.map((p) => p.scope)).toContain('instagram_content_publish');
   });
 });

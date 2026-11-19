@@ -214,22 +214,50 @@ export class FacebookService implements SocialPlatformService {
   public async fetchAccountAndVideos(accessToken: string): Promise<PlatformSyncPayload> {
     const warnings: string[] = [];
 
-    const pagesUrl = new URL(`${META_GRAPH_BASE}/me/accounts`);
-    pagesUrl.searchParams.set(
-      'fields',
-      'id,name,username,access_token,followers_count,fan_count,picture{url}'
-    );
+    type PageNode = NonNullable<FacebookPagesResponse['data']>[number];
+    let page: PageNode | undefined;
 
-    const pagesRes = await fetchJsonWithRetry<FacebookPagesResponse>(pagesUrl.toString(), {
-      platform: this.platform,
-      operationName: 'facebook_me_accounts',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/json',
-      },
-    });
+    // 1. Si es un User Access Token (durante OAuth callback), listar páginas autorizadas vía /me/accounts
+    try {
+      const pagesUrl = new URL(`${META_GRAPH_BASE}/me/accounts`);
+      pagesUrl.searchParams.set(
+        'fields',
+        'id,name,username,access_token,followers_count,fan_count,picture{url}'
+      );
 
-    const page = pagesRes.data?.[0];
+      const pagesRes = await fetchJsonWithRetry<FacebookPagesResponse>(pagesUrl.toString(), {
+        platform: this.platform,
+        operationName: 'facebook_me_accounts',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
+        },
+        maxRetries: 1,
+      });
+
+      page = pagesRes.data?.[0];
+    } catch {
+      // 2. Si ya es un Page Access Token guardado en oauth_credentials, /me apunta directamente al nodo Page
+      const selfPageUrl = new URL(`${META_GRAPH_BASE}/me`);
+      selfPageUrl.searchParams.set(
+        'fields',
+        'id,name,username,followers_count,fan_count,picture{url}'
+      );
+
+      const selfPage = await fetchJsonWithRetry<PageNode>(selfPageUrl.toString(), {
+        platform: this.platform,
+        operationName: 'facebook_page_self',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
+        },
+      });
+
+      if (selfPage?.id) {
+        page = { ...selfPage, access_token: accessToken };
+      }
+    }
+
     if (!page) {
       throw new AppError({
         code: 'NOT_FOUND',
