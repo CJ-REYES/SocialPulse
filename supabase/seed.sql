@@ -1,0 +1,10 @@
+-- ==============================================================================
+-- SEED SQL: SOCIAL ANALYTICS DASHBOARD
+-- ==============================================================================
+-- Este archivo NO inserta datos falsos ni simula cuentas conectadas (Regla Innegociable #2).
+-- El usuario inicial debe crearse mediante invitación o panel administrativo de Supabase Auth,
+-- lo cual dispara automáticamente el trigger `on_auth_user_created` que crea el registro en `public.profiles`.
+--
+-- Para crear el propietario inicial desde el SQL Editor de Supabase (opcional en entorno local):
+-- 1. Ve a Authentication > Users > "Add user" > "Create new user" o "Invite user" en Supabase Dashboard.
+-- 2. El trigger `private.handle_new_auth_user()` poblará `public.profiles` con `role = 'owner'`.
