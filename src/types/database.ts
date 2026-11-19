@@ -3,6 +3,9 @@ import type {
   ContentType,
   PermissionStatus,
   Platform,
+  PublishJobStatus,
+  PublishMode,
+  PublishPrivacyStatus,
   SyncJobStatus,
   SyncStatus,
   TriggerSource,
@@ -407,6 +410,69 @@ export interface Database {
           created_at?: string;
         };
         Update: never;
+      };
+      publish_jobs: {
+        Row: {
+          id: string;
+          user_id: string;
+          social_account_id: string;
+          platform: Platform;
+          title: string;
+          description: string | null;
+          privacy_status: PublishPrivacyStatus;
+          storage_path: string | null;
+          thumbnail_storage_path: string | null;
+          thumbnail_mime_type: string | null;
+          file_name: string;
+          file_size_bytes: number;
+          mime_type: string;
+          publish_mode: PublishMode;
+          scheduled_at: string | null;
+          status: PublishJobStatus;
+          external_post_id: string | null;
+          external_post_url: string | null;
+          error_message: string | null;
+          published_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          social_account_id: string;
+          platform: Platform;
+          title: string;
+          description?: string | null;
+          privacy_status?: PublishPrivacyStatus;
+          storage_path?: string | null;
+          thumbnail_storage_path?: string | null;
+          thumbnail_mime_type?: string | null;
+          file_name: string;
+          file_size_bytes: number;
+          mime_type?: string;
+          publish_mode?: PublishMode;
+          scheduled_at?: string | null;
+          status?: PublishJobStatus;
+          external_post_id?: string | null;
+          external_post_url?: string | null;
+          error_message?: string | null;
+          published_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          storage_path?: string | null;
+          thumbnail_storage_path?: string | null;
+          thumbnail_mime_type?: string | null;
+          publish_mode?: PublishMode;
+          scheduled_at?: string | null;
+          status?: PublishJobStatus;
+          external_post_id?: string | null;
+          external_post_url?: string | null;
+          error_message?: string | null;
+          published_at?: string | null;
+          updated_at?: string;
+        };
       };
     };
   };

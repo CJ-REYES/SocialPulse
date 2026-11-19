@@ -8,40 +8,51 @@ import type {
   OAuthTokenBundle,
   PlatformConfigStatus,
   PlatformSyncPayload,
+  PublishVideoInput,
+  PublishVideoResult,
   SocialPlatformService,
 } from '@/services/types';
 
-const META_GRAPH_VERSION = 'v21.0';
-const META_AUTH_URL = `https://www.facebook.com/${META_GRAPH_VERSION}/dialog/oauth`;
-const META_GRAPH_BASE = `https://graph.facebook.com/${META_GRAPH_VERSION}`;
+const INSTAGRAM_GRAPH_VERSION = 'v21.0';
+const INSTAGRAM_AUTH_URL = 'https://www.instagram.com/oauth/authorize';
+const INSTAGRAM_TOKEN_URL = 'https://api.instagram.com/oauth/access_token';
+const INSTAGRAM_GRAPH_BASE = 'https://graph.instagram.com';
 
+const INSTAGRAM_PUBLISH_SCOPE = 'instagram_business_content_publish';
 const INSTAGRAM_REQUIRED_SCOPES = [
-  'instagram_basic',
-  'instagram_manage_insights',
-  'pages_show_list',
-  'pages_read_engagement',
+  'instagram_business_basic',
+  'instagram_business_manage_insights',
 ];
 
-interface MetaTokenResponse {
+interface InstagramShortTokenResponse {
+  access_token?: string;
+  user_id?: string | number;
+  data?: Array<{
+    access_token?: string;
+    user_id?: string | number;
+    permissions?: string;
+  }>;
+}
+
+interface InstagramLongTokenResponse {
   access_token?: string;
   token_type?: string;
   expires_in?: number;
 }
 
-interface InstagramAccountsResponse {
-  data?: Array<{
-    id: string;
-    name?: string;
-    instagram_business_account?: {
-      id: string;
-      username?: string;
-      name?: string;
-      profile_picture_url?: string;
-      followers_count?: number;
-      follows_count?: number;
-      media_count?: number;
-    };
-  }>;
+interface InstagramProfileNode {
+  id?: string;
+  user_id?: string;
+  username?: string;
+  name?: string;
+  profile_picture_url?: string;
+  followers_count?: number;
+  follows_count?: number;
+  media_count?: number;
+}
+
+interface InstagramProfileResponse extends InstagramProfileNode {
+  data?: InstagramProfileNode[];
 }
 
 interface InstagramMediaListResponse {
@@ -92,8 +103,10 @@ export class InstagramService implements SocialPlatformService {
       missingEnvVars,
       requiresPkce: false,
       requiresAppReviewNote:
-        'Requiere cuenta Profesional de Instagram (Creator o Business) vinculada a una Página de Facebook y una App en Meta for Developers con Instagram Graph API. En modo Desarrollo funciona con cuentas con rol en la App; en modo Live requiere App Review para instagram_basic e instagram_manage_insights.',
+        'Utiliza Instagram API with Instagram Login para cuentas Profesionales (Creador o Empresa) sin requerir Página de Facebook.',
       requiredScopes: INSTAGRAM_REQUIRED_SCOPES,
+      publishScope: INSTAGRAM_PUBLISH_SCOPE,
+      supportsNativeScheduling: false,
     };
   }
 
@@ -118,12 +131,16 @@ export class InstagramService implements SocialPlatformService {
 
   public buildAuthorizationUrl(params: OAuthAuthorizationUrlParams): string {
     const { appId, redirectUri } = this.assertConfigured();
-    const url = new URL(META_AUTH_URL);
+    const scopes = params.includePublishScopes
+      ? [...INSTAGRAM_REQUIRED_SCOPES, INSTAGRAM_PUBLISH_SCOPE]
+      : INSTAGRAM_REQUIRED_SCOPES;
+    const url = new URL(INSTAGRAM_AUTH_URL);
+    url.searchParams.set('enable_fb_login', '0');
+    url.searchParams.set('force_authentication', '1');
     url.searchParams.set('client_id', appId);
     url.searchParams.set('redirect_uri', redirectUri);
     url.searchParams.set('response_type', 'code');
-    url.searchParams.set('scope', INSTAGRAM_REQUIRED_SCOPES.join(','));
-    url.searchParams.set('auth_type', 'rerequest');
+    url.searchParams.set('scope', scopes.join(','));
     url.searchParams.set('state', params.state);
     return url.toString();
   }
@@ -131,111 +148,154 @@ export class InstagramService implements SocialPlatformService {
   public async exchangeCodeForTokens(params: OAuthExchangeCodeParams): Promise<OAuthTokenBundle> {
     const { appId, appSecret, redirectUri } = this.assertConfigured();
 
-    // Paso 1: Canjear código por token de corta duración
-    const shortUrl = new URL(`${META_GRAPH_BASE}/oauth/access_token`);
-    shortUrl.searchParams.set('client_id', appId);
-    shortUrl.searchParams.set('client_secret', appSecret);
-    shortUrl.searchParams.set('redirect_uri', redirectUri);
-    shortUrl.searchParams.set('code', params.code);
+    // Instagram ocasionalmente añade '#_' al final del código de autorización
+    const cleanCode = params.code.replace(/#_$/, '');
 
-    const shortToken = await fetchJsonWithRetry<MetaTokenResponse>(shortUrl.toString(), {
-      platform: this.platform,
-      operationName: 'instagram_oauth_short_token',
-      method: 'GET',
+    const body = new URLSearchParams({
+      client_id: appId,
+      client_secret: appSecret,
+      grant_type: 'authorization_code',
+      redirect_uri: redirectUri,
+      code: cleanCode,
     });
 
-    if (!shortToken.access_token) {
+    const shortTokenRes = await fetchJsonWithRetry<InstagramShortTokenResponse>(
+      INSTAGRAM_TOKEN_URL,
+      {
+        platform: this.platform,
+        operationName: 'instagram_oauth_short_token',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: body.toString(),
+      }
+    );
+
+    const shortAccessToken =
+      shortTokenRes.access_token ?? shortTokenRes.data?.[0]?.access_token;
+
+    if (!shortAccessToken) {
       throw new AppError({
         code: 'EXTERNAL_API_ERROR',
-        message: '[INSTAGRAM] Meta OAuth no devolvió un access_token válido.',
+        message: '[INSTAGRAM] Instagram OAuth no devolvió un access_token válido.',
       });
     }
 
-    // Paso 2: Canjear por token de larga duración (60 días)
-    return await this.exchangeForLongLivedToken(shortToken.access_token);
+    // Intercambiar por token de larga duración (60 días) en graph.instagram.com
+    return await this.exchangeForLongLivedToken(shortAccessToken);
   }
 
   public async refreshAccessToken(currentLongLivedToken: string): Promise<OAuthTokenBundle> {
-    return await this.exchangeForLongLivedToken(currentLongLivedToken);
-  }
+    const refreshUrl = new URL(`${INSTAGRAM_GRAPH_BASE}/refresh_access_token`);
+    refreshUrl.searchParams.set('grant_type', 'ig_refresh_token');
+    refreshUrl.searchParams.set('access_token', currentLongLivedToken);
 
-  private async exchangeForLongLivedToken(token: string): Promise<OAuthTokenBundle> {
-    const { appId, appSecret } = this.assertConfigured();
-    const longUrl = new URL(`${META_GRAPH_BASE}/oauth/access_token`);
-    longUrl.searchParams.set('grant_type', 'fb_exchange_token');
-    longUrl.searchParams.set('client_id', appId);
-    longUrl.searchParams.set('client_secret', appSecret);
-    longUrl.searchParams.set('fb_exchange_token', token);
+    const refreshed = await fetchJsonWithRetry<InstagramLongTokenResponse>(
+      refreshUrl.toString(),
+      {
+        platform: this.platform,
+        operationName: 'instagram_oauth_refresh_token',
+        method: 'GET',
+      }
+    );
 
-    const longToken = await fetchJsonWithRetry<MetaTokenResponse>(longUrl.toString(), {
-      platform: this.platform,
-      operationName: 'instagram_oauth_long_lived_token',
-      method: 'GET',
-    });
-
-    const finalToken = longToken.access_token ?? token;
-    const expiresInSeconds = longToken.expires_in ?? 60 * 24 * 3600;
+    const finalToken = refreshed.access_token ?? currentLongLivedToken;
+    const expiresInSeconds = refreshed.expires_in ?? 60 * 24 * 3600;
     const expiresAt = new Date(Date.now() + expiresInSeconds * 1000).toISOString();
 
     return {
       accessToken: finalToken,
-      refreshToken: finalToken, // Meta utiliza fb_exchange_token sobre el token activo antes de que expire
-      tokenType: longToken.token_type ?? 'Bearer',
+      refreshToken: finalToken,
+      tokenType: refreshed.token_type ?? 'Bearer',
       expiresAt,
       refreshTokenExpiresAt: expiresAt,
       grantedScopes: INSTAGRAM_REQUIRED_SCOPES,
     };
   }
 
-  public async revokeToken(accessToken: string): Promise<void> {
-    const url = `${META_GRAPH_BASE}/me/permissions`;
-    await fetchJsonWithRetry<Record<string, unknown>>(url, {
-      platform: this.platform,
-      operationName: 'instagram_oauth_revoke',
-      method: 'DELETE',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-      maxRetries: 1,
-    });
+  private async exchangeForLongLivedToken(shortToken: string): Promise<OAuthTokenBundle> {
+    const { appSecret } = this.assertConfigured();
+    const longUrl = new URL(`${INSTAGRAM_GRAPH_BASE}/access_token`);
+    longUrl.searchParams.set('grant_type', 'ig_exchange_token');
+    longUrl.searchParams.set('client_secret', appSecret);
+    longUrl.searchParams.set('access_token', shortToken);
+
+    try {
+      const longToken = await fetchJsonWithRetry<InstagramLongTokenResponse>(
+        longUrl.toString(),
+        {
+          platform: this.platform,
+          operationName: 'instagram_oauth_long_lived_token',
+          method: 'GET',
+          maxRetries: 1,
+        }
+      );
+
+      const finalToken = longToken.access_token ?? shortToken;
+      const expiresInSeconds = longToken.expires_in ?? 60 * 24 * 3600;
+      const expiresAt = new Date(Date.now() + expiresInSeconds * 1000).toISOString();
+
+      return {
+        accessToken: finalToken,
+        refreshToken: finalToken,
+        tokenType: longToken.token_type ?? 'Bearer',
+        expiresAt,
+        refreshTokenExpiresAt: expiresAt,
+        grantedScopes: INSTAGRAM_REQUIRED_SCOPES,
+      };
+    } catch {
+      const fallbackExpiry = new Date(Date.now() + 3600 * 1000).toISOString();
+      return {
+        accessToken: shortToken,
+        refreshToken: shortToken,
+        tokenType: 'Bearer',
+        expiresAt: fallbackExpiry,
+        refreshTokenExpiresAt: fallbackExpiry,
+        grantedScopes: INSTAGRAM_REQUIRED_SCOPES,
+      };
+    }
+  }
+
+  public async revokeToken(_accessToken: string): Promise<void> {
+    // Instagram Login tokens son revocados por el usuario en Configuración de Instagram > Apps y sitios web;
+    // la eliminación local en oauth_credentials revoca inmediatamente el acceso desde SocialPulse.
   }
 
   public async fetchAccountAndVideos(accessToken: string): Promise<PlatformSyncPayload> {
     const warnings: string[] = [];
-    const authHeaders = {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: 'application/json',
-    };
 
-    const accountsUrl = new URL(`${META_GRAPH_BASE}/me/accounts`);
-    accountsUrl.searchParams.set(
+    const profileUrl = new URL(`${INSTAGRAM_GRAPH_BASE}/${INSTAGRAM_GRAPH_VERSION}/me`);
+    profileUrl.searchParams.set(
       'fields',
-      'id,name,instagram_business_account{id,username,name,profile_picture_url,followers_count,follows_count,media_count}'
+      'id,user_id,username,name,profile_picture_url,followers_count,follows_count,media_count'
     );
+    profileUrl.searchParams.set('access_token', accessToken);
 
-    const accountsRes = await fetchJsonWithRetry<InstagramAccountsResponse>(
-      accountsUrl.toString(),
+    const profileRes = await fetchJsonWithRetry<InstagramProfileResponse>(
+      profileUrl.toString(),
       {
         platform: this.platform,
-        operationName: 'instagram_discover_business_account',
-        headers: authHeaders,
+        operationName: 'instagram_me_profile',
+        method: 'GET',
       }
     );
 
-    const linkedPage = (accountsRes.data ?? []).find((p) => p.instagram_business_account?.id);
-    const igAccount = linkedPage?.instagram_business_account;
+    const igAccount: InstagramProfileNode | undefined =
+      profileRes.user_id || profileRes.id ? profileRes : profileRes.data?.[0];
 
-    if (!igAccount) {
+    const externalId = igAccount?.user_id ?? igAccount?.id;
+    if (!igAccount || !externalId) {
       throw new AppError({
         code: 'NOT_FOUND',
         message:
-          'No se encontró ninguna cuenta Profesional de Instagram (Creator/Business) vinculada a las Páginas de Facebook autorizadas.',
+          'No se encontró una cuenta Profesional de Instagram (Creador o Empresa) accesible con este token.',
       });
     }
 
     const account: ExternalAccountProfile = {
-      externalAccountId: igAccount.id,
-      accountName: igAccount.name ?? igAccount.username ?? 'Instagram Profesional',
+      externalAccountId: externalId,
+      accountName: igAccount.name ?? igAccount.username ?? 'Instagram Creador',
       accountHandle: igAccount.username ? `@${igAccount.username}` : null,
       accountAvatarUrl: igAccount.profile_picture_url ?? null,
       followersCount: igAccount.followers_count ?? 0,
@@ -246,23 +306,26 @@ export class InstagramService implements SocialPlatformService {
         status: 'granted',
       })),
       metadata: {
-        linkedFacebookPageId: linkedPage?.id ?? null,
-        linkedFacebookPageName: linkedPage?.name ?? null,
+        authMode: 'instagram_login',
       },
     };
 
-    const mediaUrl = new URL(`${META_GRAPH_BASE}/${igAccount.id}/media`);
+    const mediaUrl = new URL(`${INSTAGRAM_GRAPH_BASE}/${INSTAGRAM_GRAPH_VERSION}/me/media`);
     mediaUrl.searchParams.set(
       'fields',
       'id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count'
     );
     mediaUrl.searchParams.set('limit', '50');
+    mediaUrl.searchParams.set('access_token', accessToken);
 
-    const mediaRes = await fetchJsonWithRetry<InstagramMediaListResponse>(mediaUrl.toString(), {
-      platform: this.platform,
-      operationName: 'instagram_media_list',
-      headers: authHeaders,
-    });
+    const mediaRes = await fetchJsonWithRetry<InstagramMediaListResponse>(
+      mediaUrl.toString(),
+      {
+        platform: this.platform,
+        operationName: 'instagram_me_media',
+        method: 'GET',
+      }
+    );
 
     const videoMediaItems = (mediaRes.data ?? []).filter(
       (item) => item.media_type === 'VIDEO' || item.media_product_type === 'REELS'
@@ -273,7 +336,8 @@ export class InstagramService implements SocialPlatformService {
     for (const item of videoMediaItems) {
       const insights = await this.fetchMediaInsights(accessToken, item.id, warnings);
       const captionText = item.caption?.trim() ?? '';
-      const firstLine = captionText.split('\n')[0]?.slice(0, 110) || `Instagram Reel #${item.id.slice(-6)}`;
+      const firstLine =
+        captionText.split('\n')[0]?.slice(0, 110) || `Instagram Reel #${item.id.slice(-6)}`;
 
       const unavailableMetrics = [
         'impressions',
@@ -289,8 +353,8 @@ export class InstagramService implements SocialPlatformService {
         title: firstLine,
         description: captionText || null,
         thumbnailUrl: item.thumbnail_url ?? item.media_url ?? null,
-        permalink: item.permalink ?? `https://www.instagram.com/`,
-        durationSeconds: null, // Instagram Graph API /media no expone duración en segundos
+        permalink: item.permalink ?? 'https://www.instagram.com/',
+        durationSeconds: null,
         publishedAt: item.timestamp ?? new Date().toISOString(),
         contentType: item.media_product_type === 'REELS' ? 'reel' : 'video',
         viewsCount: insights.views ?? 0,
@@ -298,7 +362,7 @@ export class InstagramService implements SocialPlatformService {
         commentsCount: item.comments_count ?? 0,
         sharesCount: insights.shares,
         reachCount: insights.reach,
-        impressionsCount: null, // En Graph API v21+, 'views' reemplaza a 'impressions'/'plays' en Reels
+        impressionsCount: null,
         watchTimeMinutes: null,
         avgViewDurationSeconds: null,
         unavailableMetrics,
@@ -318,18 +382,21 @@ export class InstagramService implements SocialPlatformService {
     warnings: string[]
   ): Promise<{ views: number | null; reach: number | null; shares: number | null }> {
     try {
-      const insightsUrl = new URL(`${META_GRAPH_BASE}/${mediaId}/insights`);
+      const insightsUrl = new URL(
+        `${INSTAGRAM_GRAPH_BASE}/${INSTAGRAM_GRAPH_VERSION}/${mediaId}/insights`
+      );
       insightsUrl.searchParams.set('metric', 'views,reach,shares');
+      insightsUrl.searchParams.set('access_token', accessToken);
 
-      const res = await fetchJsonWithRetry<InstagramInsightsResponse>(insightsUrl.toString(), {
-        platform: this.platform,
-        operationName: 'instagram_media_insights',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: 'application/json',
-        },
-        maxRetries: 1,
-      });
+      const res = await fetchJsonWithRetry<InstagramInsightsResponse>(
+        insightsUrl.toString(),
+        {
+          platform: this.platform,
+          operationName: 'instagram_media_insights',
+          method: 'GET',
+          maxRetries: 1,
+        }
+      );
 
       let views: number | null = null;
       let reach: number | null = null;
@@ -348,10 +415,102 @@ export class InstagramService implements SocialPlatformService {
     } catch {
       if (warnings.length === 0) {
         warnings.push(
-          'Algunas métricas de Instagram Insights (views, reach, shares) no estuvieron disponibles para ciertas publicaciones (puede requerir permiso instagram_manage_insights o publicaciones posteriores a la conversión a cuenta Profesional).'
+          'Algunas métricas de Instagram Insights (views, reach, shares) no estuvieron disponibles para ciertas publicaciones.'
         );
       }
       return { views: null, reach: null, shares: null };
     }
+  }
+
+  public async publishVideo(
+    accessToken: string,
+    input: PublishVideoInput
+  ): Promise<PublishVideoResult> {
+    const caption = [input.title, input.description].filter(Boolean).join('\n\n').slice(0, 2200);
+
+    // Paso 1: Crear contenedor de Reel en Instagram Graph API
+    const createUrl = new URL(
+      `${INSTAGRAM_GRAPH_BASE}/${INSTAGRAM_GRAPH_VERSION}/${input.externalAccountId}/media`
+    );
+    const createBody = new URLSearchParams({
+      media_type: 'REELS',
+      video_url: input.signedDownloadUrl,
+      caption,
+      access_token: accessToken,
+    });
+    if (input.signedThumbnailUrl) {
+      createBody.set('cover_url', input.signedThumbnailUrl);
+    }
+
+    const containerRes = await fetchJsonWithRetry<{ id?: string }>(createUrl.toString(), {
+      platform: this.platform,
+      operationName: 'instagram_create_reel_container',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: createBody.toString(),
+      maxRetries: 1,
+    });
+
+    const creationId = containerRes.id;
+    if (!creationId) {
+      throw new AppError({
+        code: 'EXTERNAL_API_ERROR',
+        message: 'Instagram no devolvió un ID de contenedor para el Reel.',
+      });
+    }
+
+    // Paso 2: Esperar a que Instagram procese el contenedor (máx ~24s compatible con serverless)
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const statusUrl = new URL(
+        `${INSTAGRAM_GRAPH_BASE}/${INSTAGRAM_GRAPH_VERSION}/${creationId}`
+      );
+      statusUrl.searchParams.set('fields', 'status_code');
+      statusUrl.searchParams.set('access_token', accessToken);
+
+      const statusRes = await fetchJsonWithRetry<{ status_code?: string }>(
+        statusUrl.toString(),
+        {
+          platform: this.platform,
+          operationName: 'instagram_check_container_status',
+          method: 'GET',
+          maxRetries: 1,
+        }
+      );
+
+      if (statusRes.status_code === 'FINISHED') {
+        break;
+      }
+      if (statusRes.status_code === 'ERROR' || statusRes.status_code === 'EXPIRED') {
+        throw new AppError({
+          code: 'EXTERNAL_API_ERROR',
+          message: `Instagram no pudo procesar el video (estado: ${statusRes.status_code}). Verifica formato MP4 H.264 / AAC.`,
+        });
+      }
+    }
+
+    // Paso 3: Publicar el contenedor procesado
+    const publishUrl = new URL(
+      `${INSTAGRAM_GRAPH_BASE}/${INSTAGRAM_GRAPH_VERSION}/${input.externalAccountId}/media_publish`
+    );
+    const publishBody = new URLSearchParams({
+      creation_id: creationId,
+      access_token: accessToken,
+    });
+
+    const published = await fetchJsonWithRetry<{ id?: string }>(publishUrl.toString(), {
+      platform: this.platform,
+      operationName: 'instagram_publish_reel',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: publishBody.toString(),
+      maxRetries: 1,
+    });
+
+    return {
+      externalPostId: published.id ?? creationId,
+      externalPostUrl: 'https://www.instagram.com/',
+      finalStatus: 'published',
+    };
   }
 }

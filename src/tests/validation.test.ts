@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createPublishJobSchema,
   dashboardFilterSchema,
   loginFormSchema,
   manualSyncRequestSchema,
   resetPasswordSchema,
+  uploadUrlRequestSchema,
   videoLibraryQuerySchema,
 } from '@/lib/validation/schemas';
 
@@ -112,5 +114,69 @@ describe('Validation: Zod Schemas', () => {
         socialAccountId: 'invalid-uuid-string',
       }).success
     ).toBe(false);
+  });
+
+  it('validates video upload size limit (50 MB) and MIME types', () => {
+    expect(
+      uploadUrlRequestSchema.safeParse({
+        fileName: 'clip.mp4',
+        fileSizeBytes: 12 * 1024 * 1024,
+        mimeType: 'video/mp4',
+      }).success
+    ).toBe(true);
+
+    // Rejects > 50 MB
+    expect(
+      uploadUrlRequestSchema.safeParse({
+        fileName: 'huge.mp4',
+        fileSizeBytes: 60 * 1024 * 1024,
+        mimeType: 'video/mp4',
+      }).success
+    ).toBe(false);
+
+    // Rejects executable or image MIME type for video
+    expect(
+      uploadUrlRequestSchema.safeParse({
+        assetKind: 'video',
+        fileName: 'script.sh',
+        fileSizeBytes: 1024,
+        mimeType: 'text/plain',
+      }).success
+    ).toBe(false);
+
+    // Accepts JPG/PNG thumbnail <= 2 MB and rejects > 2 MB
+    expect(
+      uploadUrlRequestSchema.safeParse({
+        assetKind: 'thumbnail',
+        fileName: 'cover.png',
+        fileSizeBytes: 512 * 1024,
+        mimeType: 'image/png',
+      }).success
+    ).toBe(true);
+
+    expect(
+      uploadUrlRequestSchema.safeParse({
+        assetKind: 'thumbnail',
+        fileName: 'huge-cover.png',
+        fileSizeBytes: 3 * 1024 * 1024,
+        mimeType: 'image/png',
+      }).success
+    ).toBe(false);
+  });
+
+  it('validates createPublishJobSchema with optional ISO scheduledAt', () => {
+    expect(
+      createPublishJobSchema.safeParse({
+        socialAccountIds: ['550e8400-e29b-41d4-a716-446655440000'],
+        title: 'Lanzamiento de producto',
+        description: 'Demo oficial',
+        privacyStatus: 'private',
+        storagePath: '550e8400-e29b-41d4-a716-446655440000/video.mp4',
+        fileName: 'video.mp4',
+        fileSizeBytes: 4096,
+        mimeType: 'video/mp4',
+        scheduledAt: '2026-12-01T15:00:00.000Z',
+      }).success
+    ).toBe(true);
   });
 });

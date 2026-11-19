@@ -212,6 +212,48 @@ export interface TimeSeriesPoint {
   total: number;
 }
 
+export const PUBLISH_PRIVACY_STATUSES = ['public', 'unlisted', 'private'] as const;
+export type PublishPrivacyStatus = (typeof PUBLISH_PRIVACY_STATUSES)[number];
+
+export const PUBLISH_MODES = ['immediate', 'scheduled_native', 'scheduled_queue'] as const;
+export type PublishMode = (typeof PUBLISH_MODES)[number];
+
+export const PUBLISH_JOB_STATUSES = [
+  'pending',
+  'uploading',
+  'scheduled',
+  'published',
+  'draft_inbox',
+  'failed',
+  'cancelled',
+] as const;
+export type PublishJobStatus = (typeof PUBLISH_JOB_STATUSES)[number];
+
+export interface PublishJobRecord {
+  id: string;
+  userId: string;
+  socialAccountId: string;
+  platform: Platform;
+  title: string;
+  description: string | null;
+  privacyStatus: PublishPrivacyStatus;
+  storagePath: string | null;
+  thumbnailStoragePath: string | null;
+  thumbnailMimeType: string | null;
+  fileName: string;
+  fileSizeBytes: number;
+  mimeType: string;
+  publishMode: PublishMode;
+  scheduledAt: string | null;
+  status: PublishJobStatus;
+  externalPostId: string | null;
+  externalPostUrl: string | null;
+  errorMessage: string | null;
+  publishedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface DashboardOverviewData {
   filter: {
     preset: DateRangePreset;

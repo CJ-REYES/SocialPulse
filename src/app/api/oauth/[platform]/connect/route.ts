@@ -72,9 +72,13 @@ export async function GET(
       maxAge: 600,
     });
 
+    const includePublishScopes =
+      request.nextUrl.searchParams.get('mode') === 'publish';
+
     const authorizationUrl = service.buildAuthorizationUrl({
       state,
       codeChallenge,
+      includePublishScopes,
     });
 
     return NextResponse.redirect(authorizationUrl);

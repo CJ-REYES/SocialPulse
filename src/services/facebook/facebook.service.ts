@@ -8,6 +8,8 @@ import type {
   OAuthTokenBundle,
   PlatformConfigStatus,
   PlatformSyncPayload,
+  PublishVideoInput,
+  PublishVideoResult,
   SocialPlatformService,
 } from '@/services/types';
 
@@ -15,6 +17,7 @@ const META_GRAPH_VERSION = 'v21.0';
 const META_AUTH_URL = `https://www.facebook.com/${META_GRAPH_VERSION}/dialog/oauth`;
 const META_GRAPH_BASE = `https://graph.facebook.com/${META_GRAPH_VERSION}`;
 
+const FACEBOOK_PUBLISH_SCOPE = 'pages_manage_posts';
 const FACEBOOK_REQUIRED_SCOPES = [
   'pages_show_list',
   'pages_read_engagement',
@@ -99,6 +102,8 @@ export class FacebookService implements SocialPlatformService {
       requiresAppReviewNote:
         'Requiere una Página de Facebook autorizada y una App en Meta for Developers con Facebook Login. En modo Live requiere App Review para pages_read_engagement, pages_read_user_content y read_insights.',
       requiredScopes: FACEBOOK_REQUIRED_SCOPES,
+      publishScope: FACEBOOK_PUBLISH_SCOPE,
+      supportsNativeScheduling: true,
     };
   }
 
@@ -123,11 +128,14 @@ export class FacebookService implements SocialPlatformService {
 
   public buildAuthorizationUrl(params: OAuthAuthorizationUrlParams): string {
     const { appId, redirectUri } = this.assertConfigured();
+    const scopes = params.includePublishScopes
+      ? [...FACEBOOK_REQUIRED_SCOPES, FACEBOOK_PUBLISH_SCOPE]
+      : FACEBOOK_REQUIRED_SCOPES;
     const url = new URL(META_AUTH_URL);
     url.searchParams.set('client_id', appId);
     url.searchParams.set('redirect_uri', redirectUri);
     url.searchParams.set('response_type', 'code');
-    url.searchParams.set('scope', FACEBOOK_REQUIRED_SCOPES.join(','));
+    url.searchParams.set('scope', scopes.join(','));
     url.searchParams.set('auth_type', 'rerequest');
     url.searchParams.set('state', params.state);
     return url.toString();
@@ -372,5 +380,86 @@ export class FacebookService implements SocialPlatformService {
         avgViewDurationSeconds: null,
       };
     }
+  }
+
+  public async publishVideo(
+    accessToken: string,
+    input: PublishVideoInput
+  ): Promise<PublishVideoResult> {
+    const isScheduled = Boolean(input.scheduledAt);
+    const body = new URLSearchParams({
+      file_url: input.signedDownloadUrl,
+      title: input.title,
+      description: input.description,
+      access_token: accessToken,
+    });
+
+    if (isScheduled && input.scheduledAt) {
+      const unixTime = Math.floor(new Date(input.scheduledAt).getTime() / 1000);
+      body.set('published', 'false');
+      body.set('scheduled_publish_time', String(unixTime));
+    } else {
+      body.set('published', 'true');
+    }
+
+    const res = await fetchJsonWithRetry<{ id?: string }>(
+      `${META_GRAPH_BASE}/${input.externalAccountId}/videos`,
+      {
+        platform: this.platform,
+        operationName: 'facebook_publish_page_video',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+        maxRetries: 1,
+      }
+    );
+
+    const videoId = res.id;
+    if (!videoId) {
+      throw new AppError({
+        code: 'EXTERNAL_API_ERROR',
+        message: 'Facebook no devolvió un ID al subir el video a la Página.',
+      });
+    }
+
+    let thumbnailNotice: string | undefined;
+    if (input.signedThumbnailUrl) {
+      try {
+        const thumbRes = await fetch(input.signedThumbnailUrl);
+        if (thumbRes.ok) {
+          const thumbBlob = await thumbRes.blob();
+          const form = new FormData();
+          form.append('source', thumbBlob, 'thumbnail.jpg');
+          form.append('is_preferred', 'true');
+          form.append('access_token', accessToken);
+
+          const fbThumbRes = await fetch(
+            `${META_GRAPH_BASE}/${videoId}/thumbnails`,
+            {
+              method: 'POST',
+              body: form,
+            }
+          );
+          if (!fbThumbRes.ok) {
+            thumbnailNotice =
+              'Video subido a la Página, pero no se pudo aplicar la miniatura personalizada.';
+          }
+        }
+      } catch {
+        thumbnailNotice =
+          'Video subido a la Página, pero no se pudo aplicar la miniatura personalizada.';
+      }
+    }
+
+    const baseNotice = isScheduled
+      ? 'Video programado directamente en tu Página de Facebook.'
+      : undefined;
+
+    return {
+      externalPostId: videoId,
+      externalPostUrl: `https://www.facebook.com/${input.externalAccountId}/videos/${videoId}`,
+      finalStatus: isScheduled ? 'scheduled' : 'published',
+      notice: [baseNotice, thumbnailNotice].filter(Boolean).join(' ') || undefined,
+    };
   }
 }

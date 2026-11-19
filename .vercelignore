@@ -1,0 +1,15 @@
+# Local rendered videos
+*.mp4
+
+# Local environment secrets
+.env
+.env.local
+.env.*.local
+
+# Testing & build artifacts
+coverage
+playwright-report
+test-results
+e2e
+.next
+node_modules

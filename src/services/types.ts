@@ -1,8 +1,34 @@
-import type { ContentType, PermissionStatus, Platform } from '@/types/domain';
+import type {
+  ContentType,
+  PermissionStatus,
+  Platform,
+  PublishPrivacyStatus,
+} from '@/types/domain';
 
 export interface OAuthAuthorizationUrlParams {
   state: string;
   codeChallenge?: string;
+  includePublishScopes?: boolean;
+}
+
+export interface PublishVideoInput {
+  externalAccountId: string;
+  title: string;
+  description: string;
+  privacyStatus: PublishPrivacyStatus;
+  signedDownloadUrl: string;
+  signedThumbnailUrl?: string | null;
+  thumbnailMimeType?: string | null;
+  fileSizeBytes: number;
+  mimeType: string;
+  scheduledAt?: string | null;
+}
+
+export interface PublishVideoResult {
+  externalPostId: string;
+  externalPostUrl: string | null;
+  finalStatus: 'published' | 'scheduled' | 'draft_inbox';
+  notice?: string;
 }
 
 export interface OAuthExchangeCodeParams {
@@ -74,6 +100,8 @@ export interface PlatformConfigStatus {
   requiresPkce: boolean;
   requiresAppReviewNote: string;
   requiredScopes: string[];
+  publishScope: string;
+  supportsNativeScheduling: boolean;
 }
 
 export interface SocialPlatformService {
@@ -84,4 +112,5 @@ export interface SocialPlatformService {
   refreshAccessToken(refreshTokenOrCurrentToken: string): Promise<OAuthTokenBundle>;
   revokeToken(accessToken: string): Promise<void>;
   fetchAccountAndVideos(accessToken: string): Promise<PlatformSyncPayload>;
+  publishVideo(accessToken: string, input: PublishVideoInput): Promise<PublishVideoResult>;
 }

@@ -9,6 +9,8 @@ import type {
   OAuthTokenBundle,
   PlatformConfigStatus,
   PlatformSyncPayload,
+  PublishVideoInput,
+  PublishVideoResult,
   SocialPlatformService,
 } from '@/services/types';
 
@@ -16,8 +18,11 @@ const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const GOOGLE_REVOKE_URL = 'https://oauth2.googleapis.com/revoke';
 const YOUTUBE_DATA_API_BASE = 'https://www.googleapis.com/youtube/v3';
+const YOUTUBE_UPLOAD_API_URL =
+  'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status';
 const YOUTUBE_ANALYTICS_API_BASE = 'https://youtubeanalytics.googleapis.com/v2';
 
+const YOUTUBE_PUBLISH_SCOPE = 'https://www.googleapis.com/auth/youtube.upload';
 const YOUTUBE_REQUIRED_SCOPES = [
   'https://www.googleapis.com/auth/youtube.readonly',
   'https://www.googleapis.com/auth/yt-analytics.readonly',
@@ -120,6 +125,8 @@ export class YouTubeService implements SocialPlatformService {
       requiresAppReviewNote:
         'Requiere proyecto en Google Cloud Console con YouTube Data API v3 y YouTube Analytics API habilitadas. En modo Testing permite hasta 100 usuarios de prueba sin verificación de marca.',
       requiredScopes: YOUTUBE_REQUIRED_SCOPES,
+      publishScope: YOUTUBE_PUBLISH_SCOPE,
+      supportsNativeScheduling: true,
     };
   }
 
@@ -144,11 +151,14 @@ export class YouTubeService implements SocialPlatformService {
 
   public buildAuthorizationUrl(params: OAuthAuthorizationUrlParams): string {
     const { clientId, redirectUri } = this.assertConfigured();
+    const scopes = params.includePublishScopes
+      ? [...YOUTUBE_REQUIRED_SCOPES, YOUTUBE_PUBLISH_SCOPE]
+      : YOUTUBE_REQUIRED_SCOPES;
     const url = new URL(GOOGLE_AUTH_URL);
     url.searchParams.set('client_id', clientId);
     url.searchParams.set('redirect_uri', redirectUri);
     url.searchParams.set('response_type', 'code');
-    url.searchParams.set('scope', YOUTUBE_REQUIRED_SCOPES.join(' '));
+    url.searchParams.set('scope', scopes.join(' '));
     url.searchParams.set('access_type', 'offline');
     url.searchParams.set('prompt', 'consent');
     url.searchParams.set('include_granted_scopes', 'true');
@@ -484,5 +494,141 @@ export class YouTubeService implements SocialPlatformService {
     }
 
     return result;
+  }
+
+  public async publishVideo(
+    accessToken: string,
+    input: PublishVideoInput
+  ): Promise<PublishVideoResult> {
+    const isScheduled = Boolean(input.scheduledAt);
+    const metadataBody = {
+      snippet: {
+        title: input.title.slice(0, 100),
+        description: input.description,
+        categoryId: '22',
+      },
+      status: isScheduled
+        ? {
+            privacyStatus: 'private',
+            publishAt: input.scheduledAt,
+            selfDeclaredMadeForKids: false,
+          }
+        : {
+            privacyStatus: input.privacyStatus,
+            selfDeclaredMadeForKids: false,
+          },
+    };
+
+    // Paso 1: Iniciar sesión Resumable Upload en YouTube Data API v3
+    const initRes = await fetch(YOUTUBE_UPLOAD_API_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json; charset=UTF-8',
+        'X-Upload-Content-Length': String(input.fileSizeBytes),
+        'X-Upload-Content-Type': input.mimeType,
+      },
+      body: JSON.stringify(metadataBody),
+    });
+
+    if (initRes.status === 401) {
+      throw new AppError({
+        code: 'OAUTH_TOKEN_EXPIRED',
+        message: 'La autorización de YouTube expiró. Renueva tu conexión e inténtalo de nuevo.',
+      });
+    }
+
+    if (initRes.status === 403) {
+      throw new AppError({
+        code: 'OAUTH_PERMISSION_DENIED',
+        message:
+          'Tu cuenta de YouTube aún no tiene el permiso de subida habilitado. Pulsa "Habilitar publicación" para autorizarlo.',
+      });
+    }
+
+    const uploadLocation = initRes.headers.get('location');
+    if (!initRes.ok || !uploadLocation) {
+      throw new AppError({
+        code: 'EXTERNAL_API_ERROR',
+        message: `YouTube rechazó el inicio de subida (HTTP ${initRes.status}).`,
+      });
+    }
+
+    // Paso 2: Descargar el video desde Supabase Storage y subir el binario a YouTube
+    const fileRes = await fetch(input.signedDownloadUrl);
+    if (!fileRes.ok) {
+      throw new AppError({
+        code: 'INTERNAL_ERROR',
+        message: 'No fue posible leer el archivo temporal para enviarlo a YouTube.',
+      });
+    }
+    const videoBuffer = await fileRes.arrayBuffer();
+
+    const putRes = await fetch(uploadLocation, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': input.mimeType,
+        'Content-Length': String(videoBuffer.byteLength),
+      },
+      body: videoBuffer,
+    });
+
+    if (!putRes.ok) {
+      throw new AppError({
+        code: 'EXTERNAL_API_ERROR',
+        message: `Error al transferir el archivo de video a YouTube (HTTP ${putRes.status}).`,
+      });
+    }
+
+    const uploadedJson = (await putRes.json()) as { id?: string };
+    const videoId = uploadedJson.id ?? '';
+    if (!videoId) {
+      throw new AppError({
+        code: 'EXTERNAL_API_ERROR',
+        message: 'YouTube completó la carga pero no devolvió un ID de video.',
+      });
+    }
+
+    let thumbnailNotice: string | undefined;
+    if (input.signedThumbnailUrl) {
+      try {
+        const thumbRes = await fetch(input.signedThumbnailUrl);
+        if (thumbRes.ok) {
+          const thumbBuf = await thumbRes.arrayBuffer();
+          const setThumbRes = await fetch(
+            `https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=${encodeURIComponent(videoId)}&uploadType=media`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                'Content-Type': input.thumbnailMimeType ?? 'image/jpeg',
+                'Content-Length': String(thumbBuf.byteLength),
+              },
+              body: thumbBuf,
+            }
+          );
+
+          if (!setThumbRes.ok) {
+            thumbnailNotice =
+              'Video subido correctamente, pero YouTube rechazó la miniatura personalizada (requiere canal verificado por teléfono).';
+          }
+        }
+      } catch {
+        thumbnailNotice =
+          'Video subido correctamente, pero no se pudo aplicar la miniatura personalizada.';
+      }
+    }
+
+    const baseNotice = isScheduled
+      ? 'Programado directamente en YouTube (se publicará automáticamente en la fecha y hora elegidas).'
+      : undefined;
+
+    return {
+      externalPostId: videoId,
+      externalPostUrl: `https://www.youtube.com/watch?v=${videoId}`,
+      finalStatus: isScheduled ? 'scheduled' : 'published',
+      notice: [baseNotice, thumbnailNotice].filter(Boolean).join(' ') || undefined,
+    };
   }
 }

@@ -51,12 +51,34 @@ describe('Platform Services & Resilient HTTP Client', () => {
     expect(ttUrl.searchParams.get('scope')).toContain('video.list');
 
     const igUrl = new URL(ig.buildAuthorizationUrl({ state: 'signed-state-3' }));
-    expect(igUrl.hostname).toBe('www.facebook.com');
-    expect(igUrl.searchParams.get('scope')).toContain('instagram_manage_insights');
+    expect(igUrl.hostname).toBe('www.instagram.com');
+    expect(igUrl.searchParams.get('scope')).toContain('instagram_business_manage_insights');
 
     const fbUrl = new URL(fb.buildAuthorizationUrl({ state: 'signed-state-4' }));
     expect(fbUrl.hostname).toBe('www.facebook.com');
     expect(fbUrl.searchParams.get('scope')).toContain('read_insights');
+    expect(fbUrl.searchParams.get('scope')).not.toContain('pages_manage_posts');
+
+    // Verify publish scopes are included ONLY when includePublishScopes is true
+    const ytPubUrl = new URL(
+      yt.buildAuthorizationUrl({ state: 's1', includePublishScopes: true })
+    );
+    expect(ytPubUrl.searchParams.get('scope')).toContain('youtube.upload');
+
+    const ttPubUrl = new URL(
+      tt.buildAuthorizationUrl({ state: 's2', includePublishScopes: true })
+    );
+    expect(ttPubUrl.searchParams.get('scope')).toContain('video.upload');
+
+    const igPubUrl = new URL(
+      ig.buildAuthorizationUrl({ state: 's3', includePublishScopes: true })
+    );
+    expect(igPubUrl.searchParams.get('scope')).toContain('instagram_business_content_publish');
+
+    const fbPubUrl = new URL(
+      fb.buildAuthorizationUrl({ state: 's4', includePublishScopes: true })
+    );
+    expect(fbPubUrl.searchParams.get('scope')).toContain('pages_manage_posts');
   });
 
   it('parses YouTube Data API v3 & Analytics API v2 responses and documents unavailable metrics', async () => {

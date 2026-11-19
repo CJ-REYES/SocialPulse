@@ -8,6 +8,8 @@ import type {
   OAuthTokenBundle,
   PlatformConfigStatus,
   PlatformSyncPayload,
+  PublishVideoInput,
+  PublishVideoResult,
   SocialPlatformService,
 } from '@/services/types';
 
@@ -16,6 +18,7 @@ const TIKTOK_TOKEN_URL = 'https://open.tiktokapis.com/v2/oauth/token/';
 const TIKTOK_REVOKE_URL = 'https://open.tiktokapis.com/v2/oauth/revoke/';
 const TIKTOK_API_BASE = 'https://open.tiktokapis.com/v2';
 
+const TIKTOK_PUBLISH_SCOPE = 'video.upload';
 const TIKTOK_REQUIRED_SCOPES = ['user.info.basic', 'user.info.stats', 'video.list'];
 
 interface TikTokTokenResponse {
@@ -99,6 +102,8 @@ export class TikTokService implements SocialPlatformService {
       requiresAppReviewNote:
         'Requiere aplicación en TikTok for Developers con Login Kit v2 y Display API habilitados. En Sandbox funciona con cuentas agregadas como Target Users; en Producción requiere aprobación de scopes user.info.stats y video.list.',
       requiredScopes: TIKTOK_REQUIRED_SCOPES,
+      publishScope: TIKTOK_PUBLISH_SCOPE,
+      supportsNativeScheduling: false,
     };
   }
 
@@ -123,11 +128,14 @@ export class TikTokService implements SocialPlatformService {
 
   public buildAuthorizationUrl(params: OAuthAuthorizationUrlParams): string {
     const { clientKey, redirectUri } = this.assertConfigured();
+    const scopes = params.includePublishScopes
+      ? [...TIKTOK_REQUIRED_SCOPES, TIKTOK_PUBLISH_SCOPE]
+      : TIKTOK_REQUIRED_SCOPES;
     const url = new URL(TIKTOK_AUTH_URL);
     url.searchParams.set('client_key', clientKey);
     url.searchParams.set('redirect_uri', redirectUri);
     url.searchParams.set('response_type', 'code');
-    url.searchParams.set('scope', TIKTOK_REQUIRED_SCOPES.join(','));
+    url.searchParams.set('scope', scopes.join(','));
     url.searchParams.set('state', params.state);
     return url.toString();
   }
@@ -251,7 +259,6 @@ export class TikTokService implements SocialPlatformService {
       'union_id',
       'avatar_url',
       'display_name',
-      'username',
       'follower_count',
       'following_count',
       'likes_count',
@@ -395,5 +402,104 @@ export class TikTokService implements SocialPlatformService {
     }
 
     return { account, videos, warnings };
+  }
+
+  public async publishVideo(
+    accessToken: string,
+    input: PublishVideoInput
+  ): Promise<PublishVideoResult> {
+    // Descargar el archivo temporal para calcular tamaño exacto en bytes
+    const fileRes = await fetch(input.signedDownloadUrl);
+    if (!fileRes.ok) {
+      throw new AppError({
+        code: 'INTERNAL_ERROR',
+        message: 'No fue posible leer el archivo temporal para enviarlo a TikTok.',
+      });
+    }
+    const videoBuffer = await fileRes.arrayBuffer();
+    const exactBytes = videoBuffer.byteLength;
+
+    // Paso 1: Inicializar envío a Inbox / Borradores mediante Content Posting API v2 (scope: video.upload)
+    interface TikTokInitUploadResponse {
+      data?: {
+        publish_id?: string;
+        upload_url?: string;
+      };
+      error?: {
+        code?: string;
+        message?: string;
+      };
+    }
+
+    const initRes = await fetchJsonWithRetry<TikTokInitUploadResponse>(
+      `${TIKTOK_API_BASE}/post/publish/inbox/video/init/`,
+      {
+        platform: this.platform,
+        operationName: 'tiktok_inbox_video_init',
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json; charset=UTF-8',
+        },
+        body: JSON.stringify({
+          source_info: {
+            source: 'FILE_UPLOAD',
+            video_size: exactBytes,
+            chunk_size: exactBytes,
+            total_chunk_count: 1,
+          },
+        }),
+        maxRetries: 1,
+      }
+    );
+
+    if (initRes.error?.code && initRes.error.code !== 'ok') {
+      if (initRes.error.code.includes('scope')) {
+        throw new AppError({
+          code: 'OAUTH_PERMISSION_DENIED',
+          message:
+            'Tu cuenta de TikTok requiere el permiso video.upload (Content Posting API) para subir videos.',
+        });
+      }
+      throw new AppError({
+        code: 'EXTERNAL_API_ERROR',
+        message: `TikTok rechazó la inicialización de carga (${initRes.error.code}).`,
+      });
+    }
+
+    const uploadUrl = initRes.data?.upload_url;
+    const publishId = initRes.data?.publish_id;
+    if (!uploadUrl || !publishId) {
+      throw new AppError({
+        code: 'EXTERNAL_API_ERROR',
+        message: 'TikTok no devolvió una URL de carga válida.',
+      });
+    }
+
+    // Paso 2: Subir el binario directamente al almacenamiento de TikTok
+    const putRes = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': input.mimeType,
+        'Content-Range': `bytes 0-${exactBytes - 1}/${exactBytes}`,
+        'Content-Length': String(exactBytes),
+      },
+      body: videoBuffer,
+    });
+
+    if (!putRes.ok) {
+      throw new AppError({
+        code: 'EXTERNAL_API_ERROR',
+        message: `Error al subir el binario a TikTok (HTTP ${putRes.status}).`,
+      });
+    }
+
+    return {
+      externalPostId: publishId,
+      externalPostUrl: 'https://www.tiktok.com/tiktokstudio',
+      finalStatus: 'draft_inbox',
+      notice:
+        'Video enviado a tu bandeja de borradores de TikTok. Abre la app de TikTok para revisar y publicar.',
+    };
   }
 }

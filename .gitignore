@@ -35,3 +35,4 @@ next-env.d.ts
 
 # Local rendered videos
 *.mp4
+.env*

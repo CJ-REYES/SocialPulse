@@ -12,6 +12,7 @@ import {
   Menu,
   ShieldCheck,
   Tv,
+  UploadCloud,
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils/cn';
@@ -33,6 +34,11 @@ const MAIN_NAV: NavItem[] = [
     label: 'Biblioteca de Videos',
     href: '/videos',
     icon: Film,
+  },
+  {
+    label: 'Publicar / Programar',
+    href: '/publish',
+    icon: UploadCloud,
   },
   {
     label: 'Comparación Multiplataforma',

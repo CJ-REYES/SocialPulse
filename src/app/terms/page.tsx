@@ -28,7 +28,7 @@ export default function TermsOfServicePage() {
             </p>
             <p>
               <strong className="text-white">2. Uso de APIs oficiales:</strong>{' '}
-              El servicio accede únicamente a los datos autorizados explícitamente por cada usuario mediante OAuth 2.0 (YouTube Data API v3, YouTube Analytics API, TikTok Display API v2, Instagram Graph API y Meta Graph API). SocialPulse no publica contenido sin autorización ni realiza scraping.
+              El servicio accede únicamente a las métricas y capacidades de publicación autorizadas explícitamente por cada usuario mediante OAuth 2.0 (YouTube Data API v3, YouTube Analytics API, TikTok API v2, Instagram Graph API y Meta Graph API). SocialPulse nunca publica contenido sin la acción o programación expresa del titular.
             </p>
             <p>
               <strong className="text-white">3. Revocación de acceso:</strong>{' '}

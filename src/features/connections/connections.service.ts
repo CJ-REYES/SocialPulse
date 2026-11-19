@@ -166,14 +166,22 @@ export async function persistOAuthConnection(params: {
     });
   }
 
-  // Registrar permisos aprobados
-  if (externalProfile.permissions.length > 0) {
-    const permissionRows = externalProfile.permissions.map((perm) => ({
+  // Registrar permisos aprobados (tanto los del perfil como los otorgados en el token OAuth)
+  const mergedScopeMap = new Map<string, 'granted' | 'denied' | 'expired' | 'pending_app_review'>();
+  for (const perm of externalProfile.permissions) {
+    mergedScopeMap.set(perm.scope, perm.status);
+  }
+  for (const grantedScope of tokenBundle.grantedScopes) {
+    mergedScopeMap.set(grantedScope, 'granted');
+  }
+
+  if (mergedScopeMap.size > 0) {
+    const permissionRows = [...mergedScopeMap.entries()].map(([scope, status]) => ({
       social_account_id: accountRow.id,
       user_id: userId,
       platform,
-      scope: perm.scope,
-      status: perm.status,
+      scope,
+      status,
       granted_at: new Date().toISOString(),
     }));
 

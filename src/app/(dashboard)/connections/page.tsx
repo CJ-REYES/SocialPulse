@@ -20,7 +20,7 @@ function resolveSafeOAuthErrorMessage(
         return 'No se encontró ninguna Página de Facebook autorizada en tu cuenta. Asegúrate de administrar una Página y seleccionarla al conceder permisos.';
       }
       if (platform === 'instagram') {
-        return 'No se encontró una cuenta Profesional de Instagram (Creador o Empresa) vinculada a tu Página de Facebook autorizada.';
+        return 'No se encontró una cuenta Profesional de Instagram (Creador o Empresa) accesible. Verifica que tu cuenta sea de Creador o Empresa y vuelve a intentarlo.';
       }
       if (platform === 'youtube') {
         return 'La cuenta de Google seleccionada no tiene un canal de YouTube activo.';

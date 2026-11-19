@@ -19,6 +19,27 @@ export interface AuthActionState {
   message?: string;
 }
 
+async function getAppBaseUrl(): Promise<string> {
+  const configured = process.env.NEXT_PUBLIC_APP_URL?.trim();
+  if (configured && !configured.includes('localhost')) {
+    return configured.replace(/\/$/, '');
+  }
+
+  const headerStore = await headers();
+  const origin = headerStore.get('origin');
+  if (origin && origin.startsWith('http')) {
+    return origin.replace(/\/$/, '');
+  }
+
+  const forwardedHost = headerStore.get('x-forwarded-host') ?? headerStore.get('host');
+  const forwardedProto = headerStore.get('x-forwarded-proto') ?? 'https';
+  if (forwardedHost) {
+    return `${forwardedProto}://${forwardedHost}`;
+  }
+
+  return configured?.replace(/\/$/, '') ?? 'http://localhost:3000';
+}
+
 async function getClientIp(): Promise<string> {
   const headerStore = await headers();
   const forwardedFor = headerStore.get('x-forwarded-for');
@@ -131,7 +152,7 @@ export async function signupAction(
     };
   }
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
+  const appUrl = await getAppBaseUrl();
   const supabase = await createClient();
 
   const { data, error } = await supabase.auth.signUp({
@@ -208,7 +229,7 @@ export async function forgotPasswordAction(
     };
   }
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
+  const appUrl = await getAppBaseUrl();
   const supabase = await createClient();
 
   await supabase.auth.resetPasswordForEmail(parsed.data.email, {

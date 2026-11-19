@@ -55,14 +55,12 @@ Todas las integraciones se comunican exclusivamente con los endpoints oficiales 
 ## 3. Instagram (`InstagramService`)
 
 - **API Oficial**:
-  - **Instagram Graph API v21.0** sobre Meta Graph API (`https://graph.facebook.com/v21.0`).
+  - **Instagram API with Instagram Login** (`https://www.instagram.com/oauth/authorize`, `https://api.instagram.com/oauth/access_token`, `https://graph.instagram.com/v21.0`).
 - **Requisitos de Cuenta**:
-  - La cuenta de Instagram debe ser una **Cuenta Profesional (Creator o Business)** vinculada a una Página de Facebook administrada por el usuario.
+  - Cuenta **Profesional de Instagram (Creador o Empresa)**. **No requiere Página de Facebook vinculada.**
 - **Scopes OAuth 2.0 Requeridos**:
-  - `instagram_basic`
-  - `instagram_manage_insights`
-  - `pages_show_list`
-  - `pages_read_engagement`
+  - `instagram_business_basic`
+  - `instagram_business_manage_insights`
 - **Métricas Recuperadas**:
   - Cuenta: `username`, `name`, `profile_picture_url`, `followers_count`, `follows_count`, `media_count`.
   - Videos y Reels: `views` (métrica unificada en Graph API v21+), `like_count`, `comments_count`, `shares`, `reach`.
